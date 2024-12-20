@@ -47,28 +47,24 @@ class MultiHeadAttention(nn.Module):
 
     def forward(self, x):
         B, T, D = x.size()
-        # Project to Q, K, V
+        #  Q, K, V
         q = self.W_q(x).view(B, T, self.num_heads, self.head_dim)
         k = self.W_k(x).view(B, T, self.num_heads, self.head_dim)
         v = self.W_v(x).view(B, T, self.num_heads, self.head_dim)
 
         if self.flash:
-            # FlashAttention expects [B, T, H, D], FP16 or BF16
-            # Ensure FP16
             assert q.dtype in [torch.float16, torch.bfloat16], "FlashAttention only supports fp16/bf16"
             out = flash_attn_func(q.contiguous(), k.contiguous(), v.contiguous(),
                                   dropout_p=0.0, softmax_scale=None)
-            # out is [B, T, H, D]
             out = out.reshape(B, T, self.num_heads * self.head_dim)
         else:
-            # Standard attention: [B, T, H, D] -> [B, H, T, D] for compute
+            # [B, T, H, D] -> [B, H, T, D]
             q = q.permute(0, 2, 1, 3)
             k = k.permute(0, 2, 1, 3)
             v = v.permute(0, 2, 1, 3)
             scores = (q @ k.transpose(-2,-1)) / math.sqrt(self.head_dim)
             attn = torch.softmax(scores, dim=-1)
             out = attn @ v
-            # Convert back to [B, T, D]
             out = out.permute(0,2,1,3).contiguous().view(B, T, self.num_heads * self.head_dim)
 
         out = self.W_o(out)
@@ -107,8 +103,6 @@ class SimpleTransformerModel(nn.Module):
 
     def forward(self, idx):
         x = self.embedding(idx)
-        # If you're using FlashAttention and want half precision in the model, cast here
-        # The embedding output is float32 by default, safe to cast to half now.
         if next(self.parameters()).dtype == torch.float16:
             x = x.half()
     
@@ -134,14 +128,10 @@ def train(model, dataloader, optimizer, steps, device, use_half=False):
     for i, (inp, tgt) in enumerate(dataloader):
         if i >= steps:
             break
-        # Move inputs and targets to device, keep them as integers
-        inp, tgt = inp.to(device), tgt.to(device)
 
-        # DO NOT cast inp or tgt to half. They are indices.
-        # Just keep inp, tgt as is.
-        
+        inp, tgt = inp.to(device), tgt.to(device)
         optimizer.zero_grad()
-        logits = model(inp)  # model will handle fp16 casting internally if needed
+        logits = model(inp)
         loss = nn.CrossEntropyLoss()(logits.view(-1, logits.size(-1)), tgt.view(-1))
         loss.backward()
         optimizer.step()
@@ -169,7 +159,7 @@ if __name__ == "__main__":
     dataset = RandomDataset(num_samples=100, seq_length=args.seq_length, vocab_size=args.vocab_size)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
-    use_half = args.flash  # Use half precision if flash is enabled
+    use_half = args.flash
     model = SimpleTransformerModel(
         dim=args.model_dim,
         num_heads=args.num_heads,
@@ -192,7 +182,6 @@ if __name__ == "__main__":
         if "out of memory" in str(e).lower():
             success = False
         else:
-            # Re-raise if it's another type of error
             raise e
 
     final_mem = get_memory_usage()
@@ -201,7 +190,6 @@ if __name__ == "__main__":
     mem_diff = final_mem - initial_mem
     elapsed_time = time_end - time_start
 
-    # Append results to CSV
     fieldnames = ["batch_size", "seq_length", "model_dim", "num_heads", "depth", "flash", "success", "initial_mem_MB", "final_mem_MB", "mem_diff_MB", "elapsed_time_s"]
     write_header = False
     if args.output_csv:
